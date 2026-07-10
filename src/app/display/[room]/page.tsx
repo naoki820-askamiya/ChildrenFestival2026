@@ -1,0 +1,2 @@
+import { redirect } from "next/navigation"; import { getRole } from "@/lib/auth"; import DisplayDashboard from "@/components/DisplayDashboard"; import { validRoom } from "@/lib/rooms";
+export default async function DisplayPage({ params }: { params: Promise<{ room: string }> }) { const { room } = await params; const role = await getRole(); if (!validRoom(room) || role !== `display${room}`) redirect("/"); return <DisplayDashboard room={room}/>; }
