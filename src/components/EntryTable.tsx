@@ -55,12 +55,14 @@ export default function EntryTable({
   busyId,
   onToggle,
   onDelete,
+  onMerge,
 }: {
   entries: Entry[];
   editable?: boolean;
   busyId?: string;
   onToggle?: (entry: Entry, field: EntryCheckField) => void;
   onDelete?: (entry: Entry) => void;
+  onMerge?: (entry: Entry) => void;
 }) {
   if (!entries.length) {
     return (
@@ -105,15 +107,23 @@ export default function EntryTable({
                 </td>
               ))}
               {editable && (
-                <td>
+                <td><div className="table-actions">
                   <button
-                    className="delete-button table-delete"
+                    className="merge-button table-action"
+                    disabled={busyId === entry.id || entry.wentToPlay}
+                    title={entry.wentToPlay ? "待機中のグループだけ合体できます" : undefined}
+                    onClick={() => onMerge?.(entry)}
+                  >
+                    合体
+                  </button>
+                  <button
+                    className="delete-button table-action"
                     disabled={busyId === entry.id}
                     onClick={() => onDelete?.(entry)}
                   >
                     キャンセル
                   </button>
-                </td>
+                </div></td>
               )}
             </tr>
           ))}

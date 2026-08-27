@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getRole } from "@/lib/auth";
-import { deleteEntry, updateEntryCheck, validRoom } from "@/lib/rooms";
+import { deleteEntry, mergeEntries, updateEntryCheck, validRoom } from "@/lib/rooms";
 import type { EntryCheckField } from "@/lib/types";
 
 type Context = { params: Promise<{ room: string; id: string }> };
@@ -32,5 +32,18 @@ export async function DELETE(_: Request, context: Context) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "削除に失敗しました" }, { status: 503 });
+  }
+}
+
+export async function PUT(request: Request, context: Context) {
+  const { room, id } = await context.params;
+  if ((await getRole()) !== "writer" || !validRoom(room)) return NextResponse.json({ error: "権限がありません" }, { status: 403 });
+  const { targetId } = (await request.json()) as { targetId?: string };
+  if (typeof targetId !== "string" || !targetId) return NextResponse.json({ error: "合体先を選択してください" }, { status: 400 });
+  try {
+    await mergeEntries(room, id, targetId);
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "合体に失敗しました" }, { status: 503 });
   }
 }

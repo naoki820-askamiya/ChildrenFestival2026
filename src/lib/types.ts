@@ -14,6 +14,13 @@ export type Entry = {
   wentToPlay: boolean;
 };
 
+export type MergeWaitingEntry = {
+  id: string;
+  people: number;
+  memo: string;
+  createdAt: string;
+};
+
 export type EntryCheckField = "visit1" | "visit2" | "visit3" | "wentToPlay";
 
 export type RoomData = {
@@ -22,4 +29,5 @@ export type RoomData = {
   waitingCount: number;
   estimatedMinutes: number;
   entries: Entry[];
+  mergeWaitingEntries: MergeWaitingEntry[];
 };

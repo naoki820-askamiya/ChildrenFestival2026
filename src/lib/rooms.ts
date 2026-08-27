@@ -1,6 +1,12 @@
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, Timestamp, type DocumentData } from "firebase-admin/firestore";
 import { getDb } from "@/lib/firebase-admin";
-import type { Entry, EntryCheckField, RoomData, RoomId } from "@/lib/types";
+import type {
+  Entry,
+  EntryCheckField,
+  MergeWaitingEntry,
+  RoomData,
+  RoomId,
+} from "@/lib/types";
 
 export function validRoom(value: string): value is RoomId {
   return value === "214" || value === "215";
@@ -9,9 +15,10 @@ export function validRoom(value: string): value is RoomId {
 export async function readRoom(room: RoomId): Promise<RoomData> {
   const db = getDb();
   const roomRef = db.collection("rooms").doc(room);
-  const [roomSnap, entriesSnap, waitingSnap, legacyWaitingSnap] = await Promise.all([
+  const [roomSnap, entriesSnap, mergeWaitingSnap, waitingSnap, legacyWaitingSnap] = await Promise.all([
     roomRef.get(),
     roomRef.collection("entries").orderBy("createdAt", "desc").limit(200).get(),
+    roomRef.collection("mergeWaiting").orderBy("createdAt", "desc").limit(200).get(),
     roomRef.collection("entries").where("wentToPlay", "==", false).count().get(),
     roomRef.collection("entries").where("arrived", "==", false).count().get(),
   ]);
@@ -31,6 +38,15 @@ export async function readRoom(room: RoomId): Promise<RoomData> {
       wentToPlay: Boolean(data.wentToPlay ?? data.arrived),
     };
   });
+  const mergeWaitingEntries: MergeWaitingEntry[] = mergeWaitingSnap.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      people: Number(data.people ?? 1),
+      memo: String(data.memo ?? ""),
+      createdAt: (data.createdAt as Timestamp).toDate().toISOString(),
+    };
+  });
   const waitingCount = waitingSnap.data().count + legacyWaitingSnap.data().count;
   return {
     room,
@@ -38,6 +54,7 @@ export async function readRoom(room: RoomId): Promise<RoomData> {
     waitingCount,
     estimatedMinutes: waitingCount * waitMinutes,
     entries,
+    mergeWaitingEntries,
   };
 }
 
@@ -47,12 +64,27 @@ export async function addEntry(
 ) {
   const db = getDb();
   const roomRef = db.collection("rooms").doc(room);
+  if (input.merged) {
+    await roomRef.collection("mergeWaiting").add({
+      people: input.people,
+      memo: input.memo,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    return;
+  }
   await db.runTransaction(async (transaction) => {
-    await transaction.get(roomRef);
+    const roomSnap = await transaction.get(roomRef);
     const entriesSnap = await transaction.get(
       roomRef.collection("entries").orderBy("createdAt", "asc"),
     );
-    const nextNumber = entriesSnap.size + 1;
+    const highestExistingNumber = entriesSnap.docs.reduce(
+      (highest, doc) => Math.max(highest, Number(doc.data().number ?? 0)),
+      0,
+    );
+    const nextNumber = Math.max(
+      Number(roomSnap.data()?.lastNumber ?? 0),
+      highestExistingNumber,
+    ) + 1;
     transaction.set(roomRef, { lastNumber: nextNumber }, { merge: true });
     transaction.create(roomRef.collection("entries").doc(), {
       number: nextNumber,
@@ -88,40 +120,52 @@ export async function updateEntryCheck(
 }
 
 export async function deleteEntry(room: RoomId, id: string) {
+  await getDb().collection("rooms").doc(room).collection("entries").doc(id).delete();
+}
+
+function isWaiting(data: DocumentData) {
+  return !Boolean(data.wentToPlay ?? data.arrived);
+}
+
+export async function mergeEntries(room: RoomId, sourceId: string, targetId: string) {
+  if (sourceId === targetId) throw new Error("同じグループ同士は合体できません");
   const db = getDb();
   const roomRef = db.collection("rooms").doc(room);
   await db.runTransaction(async (transaction) => {
-    await transaction.get(roomRef);
-    const entriesSnap = await transaction.get(
-      roomRef.collection("entries").orderBy("createdAt", "asc"),
-    );
-    const remaining = entriesSnap.docs.filter((doc) => doc.id !== id);
-    transaction.delete(roomRef.collection("entries").doc(id));
-    remaining.forEach((doc, index) => {
-      const number = index + 1;
-      if (Number(doc.data().number) !== number) {
-        transaction.update(doc.ref, { number });
-      }
+    const sourceRef = roomRef.collection("entries").doc(sourceId);
+    const targetRef = roomRef.collection("entries").doc(targetId);
+    const [sourceSnap, targetSnap] = await transaction.getAll(sourceRef, targetRef);
+    if (!sourceSnap.exists || !targetSnap.exists) throw new Error("合体するグループが見つかりません");
+    const source = sourceSnap.data()!;
+    const target = targetSnap.data()!;
+    if (!isWaiting(source) || !isWaiting(target)) throw new Error("待機中のグループだけ合体できます");
+    transaction.update(targetRef, {
+      people: Number(target.people ?? 1) + Number(source.people ?? 1),
+      merged: true,
     });
-    transaction.set(roomRef, { lastNumber: remaining.length }, { merge: true });
+    transaction.delete(sourceRef);
   });
 }
 
-export async function renumberRoom(room: RoomId) {
+export async function deleteMergeWaitingEntry(room: RoomId, id: string) {
+  await getDb().collection("rooms").doc(room).collection("mergeWaiting").doc(id).delete();
+}
+
+export async function mergeWaitingEntry(room: RoomId, id: string, targetId: string) {
   const db = getDb();
   const roomRef = db.collection("rooms").doc(room);
   await db.runTransaction(async (transaction) => {
-    await transaction.get(roomRef);
-    const entriesSnap = await transaction.get(
-      roomRef.collection("entries").orderBy("createdAt", "asc"),
-    );
-    entriesSnap.docs.forEach((doc, index) => {
-      const number = index + 1;
-      if (Number(doc.data().number) !== number) {
-        transaction.update(doc.ref, { number });
-      }
+    const waitingRef = roomRef.collection("mergeWaiting").doc(id);
+    const targetRef = roomRef.collection("entries").doc(targetId);
+    const [waitingSnap, targetSnap] = await transaction.getAll(waitingRef, targetRef);
+    if (!waitingSnap.exists || !targetSnap.exists) throw new Error("合体するグループが見つかりません");
+    const target = targetSnap.data()!;
+    if (!isWaiting(target)) throw new Error("待機中のグループだけ合体できます");
+    transaction.update(targetRef, {
+      people: Number(target.people ?? 1) + Number(waitingSnap.data()?.people ?? 1),
+      merged: true,
     });
-    transaction.set(roomRef, { lastNumber: entriesSnap.size }, { merge: true });
+    transaction.delete(waitingRef);
   });
 }
 

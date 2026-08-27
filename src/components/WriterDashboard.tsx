@@ -3,9 +3,15 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import EntryTable from "@/components/EntryTable";
 import LogoutButton from "@/components/LogoutButton";
+import MergeDialog from "@/components/MergeDialog";
+import MergeWaitingTable from "@/components/MergeWaitingTable";
 import RoomTabs from "@/components/RoomTabs";
 import StatusCards from "@/components/StatusCards";
-import type { Entry, EntryCheckField, RoomData, RoomId } from "@/lib/types";
+import type { Entry, EntryCheckField, MergeWaitingEntry, RoomData, RoomId } from "@/lib/types";
+
+type MergeSource =
+  | { kind: "entry"; entry: Entry }
+  | { kind: "waiting"; entry: MergeWaitingEntry };
 
 export default function WriterDashboard() {
   const [room, setRoom] = useState<RoomId>("214");
@@ -17,6 +23,7 @@ export default function WriterDashboard() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState("");
+  const [mergeSource, setMergeSource] = useState<MergeSource | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     try {
@@ -55,8 +62,9 @@ export default function WriterDashboard() {
         method: "POST",
         body: JSON.stringify({ merged, people, memo }),
       });
-      setMessage(`${people}人のグループを登録しました`);
+      setMessage(merged ? `${people}人をグループ合体待ちに登録しました` : `${people}人のグループを登録しました`);
       setMemo("");
+      setMerged(false);
     } catch (registerError) {
       setError(registerError instanceof Error ? registerError.message : "登録できませんでした");
     }
@@ -88,6 +96,39 @@ export default function WriterDashboard() {
     }
   }
 
+  async function removeMergeWaiting(entry: MergeWaitingEntry) {
+    if (!window.confirm(`${entry.people}人のグループ合体待ちをキャンセルしますか？\nこの操作は元に戻せません。`)) return;
+    setBusyId(entry.id);
+    try {
+      await call(`/api/rooms/${room}/merge-waiting/${entry.id}`, { method: "DELETE" });
+      setMessage("グループ合体待ちをキャンセルしました");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "削除できませんでした");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function mergeInto(target: Entry) {
+    if (!mergeSource) return;
+    setBusyId(mergeSource.entry.id);
+    try {
+      const url = mergeSource.kind === "entry"
+        ? `/api/rooms/${room}/entries/${mergeSource.entry.id}`
+        : `/api/rooms/${room}/merge-waiting/${mergeSource.entry.id}`;
+      await call(url, {
+        method: mergeSource.kind === "entry" ? "PUT" : "PATCH",
+        body: JSON.stringify({ targetId: target.id }),
+      });
+      setMessage(`グループ ${target.number} に合体しました`);
+      setMergeSource(null);
+    } catch (mergeError) {
+      setError(mergeError instanceof Error ? mergeError.message : "合体できませんでした");
+    } finally {
+      setBusyId("");
+    }
+  }
+
   async function saveWait() {
     try {
       await call(`/api/rooms/${room}`, {
@@ -104,7 +145,7 @@ export default function WriterDashboard() {
     <main className="app-shell">
       <header className="app-header">
         <div><p className="eyebrow">CHILDREN FESTIVAL 2026</p><h1>受付入力</h1></div>
-        <div className="header-actions"><RoomTabs room={room} onChange={setRoom}/><LogoutButton/></div>
+        <div className="header-actions"><RoomTabs room={room} onChange={(nextRoom) => { setRoom(nextRoom); setMergeSource(null); }}/><LogoutButton/></div>
       </header>
       <StatusCards data={data}/>
       {error && <div className="notice error-message">{error}</div>}
@@ -143,14 +184,45 @@ export default function WriterDashboard() {
           </div>
         </section>
 
-        <section className="panel list-panel">
-          <div className="panel-heading">
-            <div><p className="kicker">LATEST 200</p><h2>{room}教室の受付一覧</h2></div>
-            <span className="live-dot">自動更新</span>
-          </div>
-          <EntryTable entries={data?.entries ?? []} editable busyId={busyId} onToggle={toggle} onDelete={remove}/>
-        </section>
+        <div className="writer-lists">
+          <section className="panel list-panel">
+            <div className="panel-heading">
+              <div><p className="kicker">LATEST 200</p><h2>{room}教室の受付一覧</h2></div>
+              <span className="live-dot">自動更新</span>
+            </div>
+            <EntryTable
+              entries={data?.entries ?? []}
+              editable
+              busyId={busyId}
+              onToggle={toggle}
+              onDelete={remove}
+              onMerge={(entry) => setMergeSource({ kind: "entry", entry })}
+            />
+          </section>
+
+          <section className="panel list-panel merge-waiting-panel">
+            <div className="panel-heading">
+              <div><p className="kicker">MERGE WAITING</p><h2>{room}グループ合体待ち</h2></div>
+              <span className="count-chip">{data?.mergeWaitingEntries.length ?? 0}組</span>
+            </div>
+            <MergeWaitingTable
+              entries={data?.mergeWaitingEntries ?? []}
+              busyId={busyId}
+              onMerge={(entry) => setMergeSource({ kind: "waiting", entry })}
+              onDelete={removeMergeWaiting}
+            />
+          </section>
+        </div>
       </div>
+      {mergeSource && (
+        <MergeDialog
+          sourceLabel={mergeSource.kind === "entry" ? `グループ ${mergeSource.entry.number}` : `合体待ちの${mergeSource.entry.people}人`}
+          targets={(data?.entries ?? []).filter((entry) => !entry.wentToPlay && (mergeSource.kind !== "entry" || entry.id !== mergeSource.entry.id))}
+          busy={busyId === mergeSource.entry.id}
+          onSelect={mergeInto}
+          onClose={() => { if (!busyId) setMergeSource(null); }}
+        />
+      )}
     </main>
   );
 }
