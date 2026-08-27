@@ -1,9 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import EntryTable from "@/components/EntryTable"; import LogoutButton from "@/components/LogoutButton"; import RoomTabs from "@/components/RoomTabs"; import StatusCards from "@/components/StatusCards"; import type { RoomData, RoomId } from "@/lib/types";
-export default function ViewerDashboard() { const [room, setRoom] = useState<RoomId>("214"); const [filter, setFilter] = useState<"waiting" | "all">("waiting"); const [data, setData] = useState<RoomData | null>(null); const [error, setError] = useState("");
-  const load = useCallback(async () => { try { const r = await fetch(`/api/rooms/${room}`, { cache: "no-store" }); const j = await r.json(); if (!r.ok) throw new Error(j.error); setData(j); setError(""); } catch(e) { setError(e instanceof Error ? e.message : "読み込めませんでした"); } }, [room]);
-  useEffect(() => { const initial = setTimeout(load, 0); const timer = setInterval(load, 3000); return () => { clearTimeout(initial); clearInterval(timer); }; }, [load]); const entries = data?.entries.filter((e) => filter === "all" || !e.wentToPlay) ?? [];
+import { useState } from "react";
+import EntryTable from "@/components/EntryTable"; import LogoutButton from "@/components/LogoutButton"; import RoomTabs from "@/components/RoomTabs"; import StatusCards from "@/components/StatusCards"; import { useRoomRealtime } from "@/lib/use-room-realtime"; import type { RoomId } from "@/lib/types";
+export default function ViewerDashboard() { const [room, setRoom] = useState<RoomId>("214"); const [filter, setFilter] = useState<"waiting" | "all">("waiting"); const { data, error } = useRoomRealtime(room, { includeEntries: true }); const entries = data?.entries.filter((e) => filter === "all" || !e.wentToPlay) ?? [];
   return <main className="app-shell"><header className="app-header"><div><p className="eyebrow">CHILDREN FESTIVAL 2026</p><h1>受付状況</h1></div><div className="header-actions"><RoomTabs room={room} onChange={setRoom}/><LogoutButton/></div></header><StatusCards data={data}/>{error && <div className="notice error-message">{error}</div>}<section className="panel viewer-panel"><div className="panel-heading"><div><p className="kicker">ROOM {room}</p><h2>受付グループ</h2></div><div className="segmented filter-tabs"><button className={filter === "waiting" ? "active" : ""} onClick={() => setFilter("waiting")}>待ちのみ</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>すべて</button></div></div><EntryTable entries={entries}/></section></main>;
 }

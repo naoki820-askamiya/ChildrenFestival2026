@@ -1,0 +1,28 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function canReadRoom(room) {
+      return request.auth != null && (
+        request.auth.token.role == "writer"
+        || request.auth.token.role == "viewer"
+        || (request.auth.token.role == "display214" && room == "214")
+        || (request.auth.token.role == "display215" && room == "215")
+      );
+    }
+
+    match /rooms/{room} {
+      allow read: if canReadRoom(room);
+      allow write: if false;
+
+      match /{document=**} {
+        allow read: if canReadRoom(room);
+        allow write: if false;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

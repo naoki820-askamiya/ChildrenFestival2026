@@ -1,13 +1,14 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 import EntryTable from "@/components/EntryTable";
 import LogoutButton from "@/components/LogoutButton";
 import MergeDialog from "@/components/MergeDialog";
 import MergeWaitingTable from "@/components/MergeWaitingTable";
 import RoomTabs from "@/components/RoomTabs";
 import StatusCards from "@/components/StatusCards";
-import type { Entry, EntryCheckField, MergeWaitingEntry, RoomData, RoomId } from "@/lib/types";
+import { useRoomRealtime } from "@/lib/use-room-realtime";
+import type { Entry, EntryCheckField, MergeWaitingEntry, RoomId } from "@/lib/types";
 
 type MergeSource =
   | { kind: "entry"; entry: Entry }
@@ -15,35 +16,24 @@ type MergeSource =
 
 export default function WriterDashboard() {
   const [room, setRoom] = useState<RoomId>("214");
-  const [data, setData] = useState<RoomData | null>(null);
+  const { data, error: realtimeError } = useRoomRealtime(room, {
+    includeEntries: true,
+    includeMergeWaiting: true,
+  });
   const [merged, setMerged] = useState(false);
   const [people, setPeople] = useState(2);
   const [memo, setMemo] = useState("");
-  const [wait, setWait] = useState(5);
+  const [waitDraft, setWaitDraft] = useState({ room: "214" as RoomId, base: 5, value: 5 });
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState("");
   const [mergeSource, setMergeSource] = useState<MergeSource | null>(null);
   const [deletingAll, setDeletingAll] = useState(false);
 
-  const load = useCallback(async (quiet = false) => {
-    try {
-      const response = await fetch(`/api/rooms/${room}`, { cache: "no-store" });
-      const json = await response.json();
-      if (!response.ok) throw new Error(json.error);
-      setData(json);
-      setWait(json.waitMinutes);
-      setError("");
-    } catch (loadError) {
-      if (!quiet) setError(loadError instanceof Error ? loadError.message : "読み込めませんでした");
-    }
-  }, [room]);
-
-  useEffect(() => {
-    const initial = setTimeout(() => load(), 0);
-    const timer = setInterval(() => load(true), 3000);
-    return () => { clearTimeout(initial); clearInterval(timer); };
-  }, [load]);
+  const serverWait = data?.waitMinutes ?? 5;
+  const wait = waitDraft.room === room && waitDraft.base === serverWait
+    ? waitDraft.value
+    : serverWait;
 
   async function call(url: string, init: RequestInit) {
     setError("");
@@ -53,7 +43,6 @@ export default function WriterDashboard() {
     });
     const json = await response.json();
     if (!response.ok) throw new Error(json.error);
-    await load();
   }
 
   async function register(event: FormEvent) {
@@ -169,7 +158,7 @@ export default function WriterDashboard() {
         <div className="header-actions"><RoomTabs room={room} onChange={(nextRoom) => { setRoom(nextRoom); setMergeSource(null); }}/><LogoutButton/></div>
       </header>
       <StatusCards data={data}/>
-      {error && <div className="notice error-message">{error}</div>}
+      {(error || realtimeError) && <div className="notice error-message">{error || realtimeError}</div>}
       {message && <div className="notice success-message" onClick={() => setMessage("")}>{message}<span>×</span></div>}
 
       <div className="writer-grid">
@@ -206,7 +195,7 @@ export default function WriterDashboard() {
           <div className="divider"/>
           <label className="field-label">1グループあたりの平均待ち時間</label>
           <div className="inline-setting">
-            <input type="number" min="0" max="180" value={wait} onChange={(e) => setWait(Number(e.target.value))}/><span>分</span>
+            <input type="number" min="0" max="180" value={wait} onChange={(e) => setWaitDraft({ room, base: serverWait, value: Number(e.target.value) })}/><span>分</span>
             <button onClick={saveWait}>設定を保存</button>
           </div>
         </section>
