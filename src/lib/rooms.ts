@@ -151,6 +151,11 @@ export async function deleteMergeWaitingEntry(room: RoomId, id: string) {
   await getDb().collection("rooms").doc(room).collection("mergeWaiting").doc(id).delete();
 }
 
+export async function deleteRoomData(room: RoomId) {
+  const db = getDb();
+  await db.recursiveDelete(db.collection("rooms").doc(room));
+}
+
 export async function mergeWaitingEntry(room: RoomId, id: string, targetId: string) {
   const db = getDb();
   const roomRef = db.collection("rooms").doc(room);
