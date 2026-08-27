@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getRole } from "@/lib/auth";
-import { addEntry, readRoom, setWaitMinutes, validRoom } from "@/lib/rooms";
+import { addEntry, deleteRoomData, readRoom, setWaitMinutes, validRoom } from "@/lib/rooms";
 
 type Context = { params: Promise<{ room: string }> };
 
@@ -48,5 +48,16 @@ export async function PATCH(request: Request, context: Context) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "設定に失敗しました" }, { status: 503 });
+  }
+}
+
+export async function DELETE(_: Request, context: Context) {
+  const { room } = await context.params;
+  if ((await getRole()) !== "writer" || !validRoom(room)) return NextResponse.json({ error: "権限がありません" }, { status: 403 });
+  try {
+    await deleteRoomData(room);
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "全データの削除に失敗しました" }, { status: 503 });
   }
 }

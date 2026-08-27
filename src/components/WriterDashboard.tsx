@@ -24,6 +24,7 @@ export default function WriterDashboard() {
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState("");
   const [mergeSource, setMergeSource] = useState<MergeSource | null>(null);
+  const [deletingAll, setDeletingAll] = useState(false);
 
   const load = useCallback(async (quiet = false) => {
     try {
@@ -141,6 +142,26 @@ export default function WriterDashboard() {
     }
   }
 
+  async function deleteAllData() {
+    const confirmed = window.confirm(
+      `${room}教室の全データを削除しますか？\n\n受付一覧、グループ合体待ち、待ち時間設定、採番情報がすべて削除されます。\nこの操作は元に戻せません。`,
+    );
+    if (!confirmed) return;
+    setDeletingAll(true);
+    setMergeSource(null);
+    try {
+      await call(`/api/rooms/${room}`, { method: "DELETE" });
+      setPeople(2);
+      setMemo("");
+      setMerged(false);
+      setMessage(`${room}教室の全データを削除しました`);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "全データを削除できませんでした");
+    } finally {
+      setDeletingAll(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -176,6 +197,12 @@ export default function WriterDashboard() {
             <input id="memo" type="text" maxLength={100} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="例：赤い帽子、1-ア"/>
             <button className="primary-button wide">この内容で登録</button>
           </form>
+          <div className="danger-zone">
+            <p><strong>{room}教室の全データを削除</strong><span>受付を最初からやり直す場合に使用します</span></p>
+            <button type="button" className="danger-button" disabled={deletingAll} onClick={deleteAllData}>
+              {deletingAll ? "削除中…" : `${room}教室の全データを削除`}
+            </button>
+          </div>
           <div className="divider"/>
           <label className="field-label">1グループあたりの平均待ち時間</label>
           <div className="inline-setting">
