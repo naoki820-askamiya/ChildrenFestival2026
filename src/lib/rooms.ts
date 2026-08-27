@@ -12,15 +12,41 @@ export function validRoom(value: string): value is RoomId {
   return value === "214" || value === "215";
 }
 
-export async function readRoom(room: RoomId): Promise<RoomData> {
+function isWaiting(data: DocumentData) {
+  return !Boolean(data.wentToPlay ?? data.arrived);
+}
+
+export async function ensureRoomSummary(room: RoomId) {
   const db = getDb();
   const roomRef = db.collection("rooms").doc(room);
-  const [roomSnap, entriesSnap, mergeWaitingSnap, waitingSnap, legacyWaitingSnap] = await Promise.all([
+  const roomSnap = await roomRef.get();
+  if (typeof roomSnap.data()?.waitingCount === "number") return;
+
+  const entriesSnap = await roomRef.collection("entries").get();
+  const waitingCount = entriesSnap.docs.reduce(
+    (count, doc) => count + (isWaiting(doc.data()) ? 1 : 0),
+    0,
+  );
+
+  await db.runTransaction(async (transaction) => {
+    const current = await transaction.get(roomRef);
+    if (typeof current.data()?.waitingCount === "number") return;
+    transaction.set(roomRef, {
+      waitingCount,
+      waitMinutes: Number(current.data()?.waitMinutes ?? 5),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+}
+
+export async function readRoom(room: RoomId): Promise<RoomData> {
+  await ensureRoomSummary(room);
+  const db = getDb();
+  const roomRef = db.collection("rooms").doc(room);
+  const [roomSnap, entriesSnap, mergeWaitingSnap] = await Promise.all([
     roomRef.get(),
     roomRef.collection("entries").orderBy("createdAt", "desc").limit(200).get(),
     roomRef.collection("mergeWaiting").orderBy("createdAt", "desc").limit(200).get(),
-    roomRef.collection("entries").where("wentToPlay", "==", false).count().get(),
-    roomRef.collection("entries").where("arrived", "==", false).count().get(),
   ]);
   const waitMinutes = Number(roomSnap.data()?.waitMinutes ?? 5);
   const entries: Entry[] = entriesSnap.docs.map((doc) => {
@@ -47,7 +73,7 @@ export async function readRoom(room: RoomId): Promise<RoomData> {
       createdAt: (data.createdAt as Timestamp).toDate().toISOString(),
     };
   });
-  const waitingCount = waitingSnap.data().count + legacyWaitingSnap.data().count;
+  const waitingCount = Number(roomSnap.data()?.waitingCount ?? 0);
   return {
     room,
     waitMinutes,
@@ -72,6 +98,7 @@ export async function addEntry(
     });
     return;
   }
+  await ensureRoomSummary(room);
   await db.runTransaction(async (transaction) => {
     const roomSnap = await transaction.get(roomRef);
     const entriesSnap = await transaction.get(
@@ -85,7 +112,11 @@ export async function addEntry(
       Number(roomSnap.data()?.lastNumber ?? 0),
       highestExistingNumber,
     ) + 1;
-    transaction.set(roomRef, { lastNumber: nextNumber }, { merge: true });
+    transaction.set(roomRef, {
+      lastNumber: nextNumber,
+      waitingCount: Number(roomSnap.data()?.waitingCount ?? 0) + 1,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
     transaction.create(roomRef.collection("entries").doc(), {
       number: nextNumber,
       people: input.people,
@@ -106,35 +137,66 @@ export async function updateEntryCheck(
   field: EntryCheckField,
   checked: boolean,
 ) {
-  const update: Record<string, boolean | FieldValue> = { [field]: checked };
-  if (field === "wentToPlay") {
-    update.arrived = FieldValue.delete();
-    update.arrivedAt = FieldValue.delete();
+  if (field !== "wentToPlay") {
+    await getDb()
+      .collection("rooms")
+      .doc(room)
+      .collection("entries")
+      .doc(id)
+      .update({ [field]: checked });
+    return;
   }
-  await getDb()
-    .collection("rooms")
-    .doc(room)
-    .collection("entries")
-    .doc(id)
-    .update(update);
+
+  await ensureRoomSummary(room);
+  const db = getDb();
+  const roomRef = db.collection("rooms").doc(room);
+  const entryRef = roomRef.collection("entries").doc(id);
+  const update: Record<string, boolean | FieldValue> = { [field]: checked };
+  update.arrived = FieldValue.delete();
+  update.arrivedAt = FieldValue.delete();
+  await db.runTransaction(async (transaction) => {
+    const [roomSnap, entrySnap] = await transaction.getAll(roomRef, entryRef);
+    if (!entrySnap.exists) throw new Error("受付グループが見つかりません");
+    const wasWaiting = isWaiting(entrySnap.data()!);
+    const willBeWaiting = !checked;
+    const delta = Number(willBeWaiting) - Number(wasWaiting);
+    transaction.update(entryRef, update);
+    if (delta !== 0) {
+      transaction.set(roomRef, {
+        waitingCount: Math.max(0, Number(roomSnap.data()?.waitingCount ?? 0) + delta),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+  });
 }
 
 export async function deleteEntry(room: RoomId, id: string) {
-  await getDb().collection("rooms").doc(room).collection("entries").doc(id).delete();
-}
-
-function isWaiting(data: DocumentData) {
-  return !Boolean(data.wentToPlay ?? data.arrived);
+  await ensureRoomSummary(room);
+  const db = getDb();
+  const roomRef = db.collection("rooms").doc(room);
+  const entryRef = roomRef.collection("entries").doc(id);
+  await db.runTransaction(async (transaction) => {
+    const [roomSnap, entrySnap] = await transaction.getAll(roomRef, entryRef);
+    if (!entrySnap.exists) return;
+    transaction.delete(entryRef);
+    if (isWaiting(entrySnap.data()!)) {
+      transaction.set(roomRef, {
+        waitingCount: Math.max(0, Number(roomSnap.data()?.waitingCount ?? 0) - 1),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+  });
 }
 
 export async function mergeEntries(room: RoomId, sourceId: string, targetId: string) {
   if (sourceId === targetId) throw new Error("同じグループ同士は合体できません");
+  await ensureRoomSummary(room);
   const db = getDb();
   const roomRef = db.collection("rooms").doc(room);
   await db.runTransaction(async (transaction) => {
     const sourceRef = roomRef.collection("entries").doc(sourceId);
     const targetRef = roomRef.collection("entries").doc(targetId);
-    const [sourceSnap, targetSnap] = await transaction.getAll(sourceRef, targetRef);
+    const [roomSnap, sourceSnap, targetSnap] = await transaction.getAll(roomRef, sourceRef, targetRef);
     if (!sourceSnap.exists || !targetSnap.exists) throw new Error("合体するグループが見つかりません");
     const source = sourceSnap.data()!;
     const target = targetSnap.data()!;
@@ -144,6 +206,10 @@ export async function mergeEntries(room: RoomId, sourceId: string, targetId: str
       merged: true,
     });
     transaction.delete(sourceRef);
+    transaction.set(roomRef, {
+      waitingCount: Math.max(0, Number(roomSnap.data()?.waitingCount ?? 0) - 1),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
   });
 }
 
@@ -157,6 +223,7 @@ export async function deleteRoomData(room: RoomId) {
 }
 
 export async function mergeWaitingEntry(room: RoomId, id: string, targetId: string) {
+  await ensureRoomSummary(room);
   const db = getDb();
   const roomRef = db.collection("rooms").doc(room);
   await db.runTransaction(async (transaction) => {
@@ -175,5 +242,9 @@ export async function mergeWaitingEntry(room: RoomId, id: string, targetId: stri
 }
 
 export async function setWaitMinutes(room: RoomId, waitMinutes: number) {
-  await getDb().collection("rooms").doc(room).set({ waitMinutes }, { merge: true });
+  await ensureRoomSummary(room);
+  await getDb().collection("rooms").doc(room).set({
+    waitMinutes,
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
 }

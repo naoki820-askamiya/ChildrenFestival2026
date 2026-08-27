@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react"; import LogoutButton from "@/components/LogoutButton"; import type { RoomData, RoomId } from "@/lib/types";
-export default function DisplayDashboard({ room }: { room: RoomId }) { const [data, setData] = useState<RoomData | null>(null); const [error, setError] = useState(""); useEffect(() => { const load = async () => { try { const r = await fetch(`/api/rooms/${room}`, { cache: "no-store" }); const j = await r.json(); if (!r.ok) throw new Error(j.error); setData(j); setError(""); } catch(e) { setError(e instanceof Error ? e.message : "最新情報を取得できません") } }; load(); const timer = setInterval(load, 3000); return () => clearInterval(timer); }, [room]);
+import LogoutButton from "@/components/LogoutButton"; import { useRoomRealtime } from "@/lib/use-room-realtime"; import type { RoomId } from "@/lib/types";
+export default function DisplayDashboard({ room }: { room: RoomId }) { const { data, error } = useRoomRealtime(room);
   return <main className="display-shell"><header><div className="display-brand"><span>CF</span><div><p>CHILDREN FESTIVAL 2026</p><strong>{room}教室</strong></div></div><LogoutButton/></header><section className="display-content"><p className="display-label">ただいまのご案内状況</p><h1>{room}教室</h1>{error ? <div className="display-error">{error}</div> : <div className="display-metrics"><article><p>お待ちのグループ</p><strong>{data?.waitingCount ?? "—"}</strong><span>組</span></article><div className="display-divider"/><article className="wait-time"><p>推定待ち時間</p><div><strong>{data?.estimatedMinutes ?? "—"}</strong><span>分</span></div><small>前後する場合があります</small></article></div>}<p className="display-note">順番にご案内いたします。教室の近くでお待ちください。</p></section><footer><span className="live-dot">最新情報を自動表示しています</span><span>1組あたり {data?.waitMinutes ?? "—"}分で計算</span></footer></main>;
 }
-
